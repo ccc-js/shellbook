@@ -1,0 +1,7 @@
+{
+  "name": "demo",
+  "title": "示範書：shell 第一課",
+  "version": "0.1.0",
+  "defaultCwd": "workspace/",
+  "chapters": ["ch01-hello.md", "ch02-files.md"]
+}

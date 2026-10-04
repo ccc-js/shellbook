@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>shellbook v0.1</title>
+<title>shellbook v0.2</title>
 <link rel="stylesheet" href="/vendor/xterm-css/xterm.css" />
 <style>
   html, body { height: 100%; margin: 0; }
@@ -11,26 +11,36 @@
          font-family: system-ui, -apple-system, "Noto Sans TC", sans-serif; }
   #menu { flex: 0 0 36px; display: flex; align-items: center; gap: 8px; padding: 0 10px;
           background: #1e1e1e; color: #ddd; font-size: 13px; white-space: nowrap; overflow: hidden; }
-  #menu select { max-width: 180px; }
+  #menu select { max-width: 200px; }
   #conn { width: 10px; height: 10px; border-radius: 50%; background: #888; display: inline-block; }
   #conn.ok { background: #3fb950; } #conn.bad { background: #f85149; }
   #menu .spacer { flex: 1; }
   #menu button { font-size: 12px; }
-  #book { flex: 1 1 auto; overflow: auto; padding: 16px 24px; min-height: 120px; background: #fafafa; }
+  #book { flex: 1 1 auto; overflow: auto; padding: 16px 24px; min-height: 120px; background: #fafafa;
+          line-height: 1.6; }
+  #book pre { background: #f0f0f0; padding: 10px 12px; border-radius: 6px; overflow: auto; }
   #splitter { flex: 0 0 6px; cursor: row-resize; background: #2a2a2a; }
   #splitter:hover, #splitter.dragging { background: #4a90e2; }
   #shell-pane { flex: 0 0 360px; display: flex; flex-direction: column; min-height: 90px; background: #000; }
   #shell-bar { flex: 0 0 26px; display: flex; align-items: center; gap: 8px; padding: 0 8px;
                background: #161616; color: #bbb; font-size: 12px; }
   #terminal { flex: 1; overflow: hidden; }
-  code.k { background: #eee; padding: 0 4px; border-radius: 3px; }
+  .codeblock { border: 1px solid #ddd; border-radius: 6px; margin: 12px 0; overflow: hidden; }
+  .codeblock pre { margin: 0; border-radius: 0; }
+  .cb-bar { display: flex; align-items: center; gap: 8px; background: #e8eef5; padding: 4px 8px; font-size: 12px; }
+  .cb-bar .mode { background: #4a90e2; color: #fff; border-radius: 3px; padding: 0 6px; }
+  .cb-bar .hint { color: #666; }
+  .cb-bar .spacer { flex: 1; }
+  .cb-bar button { font-size: 12px; cursor: pointer; }
+  .cb-note { font-size: 12px; color: #666; padding: 2px 8px 6px; background: #f7fafd; }
+  #bookErr { color: #a00; }
 </style>
 </head>
 <body>
   <header id="menu">
-    <strong>shellbook</strong><span style="color:#888">v0.1</span>
-    <label>書籍 <select id="bookSel" disabled><option>demo（v0.2 提供）</option></select></label>
-    <label>章節 <select id="chSel" disabled><option>—</option></select></label>
+    <strong>shellbook</strong><span style="color:#888">v0.2</span>
+    <label>書籍 <select id="bookSel"><option value="">載入中…</option></select></label>
+    <label>章節 <select id="chSel"><option value="">—</option></select></label>
     <button id="btnReconnect">重連</button>
     <button id="btnInterrupt" title="送 Ctrl+C">中斷</button>
     <span class="spacer"></span>
@@ -38,16 +48,7 @@
     <span id="conn" class="bad" title="連線狀態"></span>
   </header>
 
-  <main id="book">
-    <h2>shellbook v0.1 — Shell 通道 MVP</h2>
-    <p>這是 book 區佔位（v0.2 才載入真實書籍）。先在下方 shell 區打指令驗證連線：</p>
-    <pre><code>echo hello
-pwd
-ls
-seq 1 1000   # 長輸出測試
-sleep 10     # 用「中斷」按鈕或 Ctrl+C 停止</code></pre>
-    <p>版面：功能表 1 row ｜ book 區剩餘全部 ｜ shell 區預設 20 rows，中間灰條可上下拖曳，雙擊回 20 rows。</p>
-  </main>
+  <main id="book"><p>書籍載入中…</p></main>
 
   <div id="splitter" title="拖曳調整 book/shell 高度（雙擊回 20 rows）"></div>
 
@@ -61,10 +62,12 @@ sleep 10     # 用「中斷」按鈕或 Ctrl+C 停止</code></pre>
     <div id="terminal"></div>
   </footer>
 
+<script src="/vendor/marked/marked.umd.js"></script>
 <script type="module">
 import { Terminal } from '/vendor/xterm/xterm.mjs';
 import { FitAddon } from '/vendor/fit/addon-fit.mjs';
 
+// ---------- shell（沿用 v0.1） ----------
 const term = new Terminal({ cursorBlink: true, fontSize: 14, scrollback: 5000 });
 const fit = new FitAddon();
 term.loadAddon(fit);
@@ -99,7 +102,111 @@ document.getElementById('btnInterrupt').onclick = interrupt;
 document.getElementById('btnInt2').onclick = interrupt;
 document.getElementById('btnClear').onclick = () => term.clear();
 
-// ---- 中間分隔條拖曳（book ↔ shell） ----
+// ---------- book（v0.2 新增：載入 + 渲染 + 插入） ----------
+const bookEl = document.getElementById('book');
+const bookSel = document.getElementById('bookSel');
+const chSel = document.getElementById('chSel');
+
+// 與後端 src/books.js 同規則的前端判定（保持 id 一致：base-n）
+function parseInfo(info) {
+  const tokens = info.trim().split(/\s+/).filter(Boolean);
+  const lang = (tokens.shift() || '').toLowerCase();
+  let mode = null, cwd = null, expect = null;
+  for (const t of tokens) {
+    if (t === '#run') mode = mode || 'run';
+    else if (t === '#step') mode = 'step';
+    else if (t.startsWith('cwd:')) cwd = t.slice(4) || null;
+    else if (t.startsWith('expect:')) expect = t.slice(7) || null;
+  }
+  return { lang, mode, cwd, expect };
+}
+const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// 章節渲染：非 code 段走 marked，fence 自行處理以精準掛按鈕
+function renderChapter(markdown, base) {
+  const re = /```([^\n]*)\n([\s\S]*?)(?:```|$)/g;
+  let last = 0, m, n = 0, html = '';
+  while ((m = re.exec(markdown)) !== null) {
+    html += marked.parse(markdown.slice(last, m.index));
+    last = m.index + m[0].length;
+    const { lang, mode, cwd, expect } = parseInfo(m[1] || '');
+    const code = m[2].replace(/\s+$/, '');
+    if (mode && code.trim()) {
+      n += 1;
+      const id = `${base}-${n}`;
+      const hints = [cwd ? `cwd:${esc(cwd)}` : '', expect ? `觀察：${esc(expect)}` : ''].filter(Boolean).join(' · ');
+      html += `<div class="codeblock" data-block-id="${id}" data-mode="${mode}">`
+        + `<div class="cb-bar"><span class="mode">${mode === 'step' ? '單步' : '整塊'}</span>`
+        + `<span>${esc(lang)} · ${code.split('\n').length} 行</span>`
+        + `<span class="spacer"></span>`
+        + `<button data-act="insert">插入 ↓</button><button data-act="copy">複製</button></div>`
+        + `<pre><code>${esc(code)}</code></pre>`
+        + (hints ? `<div class="cb-note">${hints}（v0.2：按「插入」送到 shell，自己按 Enter 執行）</div>` : '')
+        + `</div>`;
+    } else {
+      html += `<pre><code>${esc(code)}</code></pre>`;
+    }
+  }
+  html += marked.parse(markdown.slice(last));
+  return html;
+}
+
+async function loadBooks() {
+  const r = await fetch('/api/books');
+  const list = await r.json();
+  bookSel.innerHTML = list.length
+    ? list.map((b) => `<option value="${b.name}">${b.title}</option>`).join('')
+    : '<option value="">（尚無書籍）</option>';
+  if (list.length) await loadBook(list[0].name);
+  else bookEl.innerHTML = '<p>尚無書籍，請在 books/ 下放一本書（見 _doc/BOOK.md）。</p>';
+}
+
+async function loadBook(name) {
+  bookSel.value = name;
+  const r = await fetch(`/api/books/${encodeURIComponent(name)}`);
+  if (!r.ok) { bookEl.innerHTML = `<p id="bookErr">載入書籍失敗：${r.status}</p>`; return; }
+  const book = await r.json();
+  chSel.innerHTML = book.chapters.map((c) => `<option value="${c.file}">${c.title}</option>`).join('');
+  if (book.chapters.length) await loadChapter(name, book.chapters[0].file);
+}
+
+async function loadChapter(name, file) {
+  chSel.value = file;
+  const base = file.replace(/\.md$/, '');
+  const r = await fetch(`/api/books/${encodeURIComponent(name)}/ch/${encodeURIComponent(base)}`);
+  if (!r.ok) { bookEl.innerHTML = `<p id="bookErr">載入章節失敗：${r.status}</p>`; return; }
+  const ch = await r.json();
+  bookEl.innerHTML = renderChapter(ch.markdown, base);
+  bookEl.scrollTop = 0;
+}
+
+bookSel.onchange = () => bookSel.value && loadBook(bookSel.value);
+chSel.onchange = () => bookSel.value && chSel.value && loadChapter(bookSel.value, chSel.value);
+
+// 插入 / 複製（事件委派；v0.2 插入不帶換行，由使用者按 Enter 執行）
+bookEl.addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const box = e.target.closest('.codeblock');
+  const code = box.querySelector('code').textContent;
+  if (btn.dataset.act === 'insert') {
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'input', data: code }));
+      term.focus();
+      term.write('\r\n\x1b[33m[已插入上段範例，按 Enter 執行]\x1b[0m\r\n');
+    } else {
+      alert('shell 尚未連線，請先按「重連」');
+    }
+  } else if (btn.dataset.act === 'copy') {
+    try { await navigator.clipboard.writeText(code); btn.textContent = '已複製'; }
+    catch { btn.textContent = '複製失敗'; }
+    setTimeout(() => (btn.textContent = '複製'), 1200);
+  }
+});
+
+loadBooks().catch((e) => { bookEl.innerHTML = `<p id="bookErr">載入書籍失敗：${e.message}</p>`; });
+
+// ---------- 中間分隔條拖曳（沿用 v0.1） ----------
 const splitter = document.getElementById('splitter');
 const shellPane = document.getElementById('shell-pane');
 const DEFAULT_H = 360;
