@@ -1,0 +1,7 @@
+{
+  "name": "gitbook",
+  "title": "git 實戰：從 init 到協作",
+  "version": "0.1.0",
+  "defaultCwd": "workspace/",
+  "chapters": ["ch01-setup.md", "ch02-first-commit.md", "ch03-branch-merge.md", "ch04-remote.md"]
+}

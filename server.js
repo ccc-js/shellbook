@@ -16,7 +16,7 @@ const app = express();
 app.use(express.json());
 
 app.get('/api/health', (req, res) => {
-  res.json({ ok: true, version: 'v0.3', workspace: 'workspace/' });
+  res.json({ ok: true, version: 'v0.4', workspace: 'workspace/' });
 });
 
 // ---- Book API（v0.2 唯讀） ----
@@ -54,7 +54,10 @@ const wss = new WebSocketServer({ server, path: '/ws/shell' });
 // ---- 單一全域 pty（v0.3：共用；執行由 Runner 排隊，避免交錯） ----
 const SHELL = process.env.SHELL || 'bash';
 let term = null;
-const runner = new Runner({ write: (d) => term && term.write(d) });
+const runner = new Runner({
+  write: (d) => term && term.write(d),
+  timeoutMs: Number(process.env.SHELLBOOK_TIMEOUT_MS) || 30000,
+});
 
 function spawnPty(cols = 80, rows = 24) {
   term = pty.spawn(SHELL, ['-i'], {
@@ -62,7 +65,7 @@ function spawnPty(cols = 80, rows = 24) {
     cols,
     rows,
     cwd: WORKSPACE,
-    env: { ...process.env, TERM: 'xterm-256color' },
+    env: { ...process.env, TERM: 'xterm-256color', SHELLBOOK_WS: WORKSPACE },
   });
   term.onData((data) => {
     runner.sniff(data);
@@ -85,7 +88,7 @@ spawnPty();
 
 wss.on('connection', (ws) => {
   ws.send(JSON.stringify({ type: 'state', cwd: 'workspace/', shell: SHELL }));
-  ws.send(JSON.stringify({ type: 'output', data: '\r\n[shellbook v0.3 connected — type commands below]\r\n' }));
+  ws.send(JSON.stringify({ type: 'output', data: '\r\n[shellbook v0.4 connected — type commands below]\r\n' }));
 
   ws.on('message', (raw) => {
     let msg;
@@ -125,5 +128,5 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`shellbook v0.3 listening on http://localhost:${PORT}`);
+  console.log(`shellbook v0.4 listening on http://localhost:${PORT}`);
 });
