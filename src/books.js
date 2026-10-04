@@ -2,12 +2,13 @@
 const fs = require('fs');
 const path = require('path');
 
-const BOOKS_DIR = path.join(__dirname, '..', 'books');
+const DEFAULT_BOOKS_DIR = path.join(__dirname, '..', 'books');
 const NAME_RE = /^[a-z0-9-]+$/;
 const RUN_LANGS = new Set(['sh', 'bash', 'shell', 'zsh']);
 
 function booksDir() {
-  return BOOKS_DIR;
+  // v0.8：CLI 可用 SHELLBOOK_BOOKS_DIR 指向別處的書
+  return process.env.SHELLBOOK_BOOKS_DIR || DEFAULT_BOOKS_DIR;
 }
 
 function assertSafeName(name) {
@@ -20,7 +21,7 @@ function assertSafeName(name) {
 
 function bookPath(name) {
   assertSafeName(name);
-  return path.join(BOOKS_DIR, name);
+  return path.join(booksDir(), name);
 }
 
 function readBookMeta(name) {
@@ -106,9 +107,10 @@ function parseBlocks(markdown, base) {
 }
 
 function listBooks() {
-  if (!fs.existsSync(BOOKS_DIR)) return [];
+  const dir = booksDir();
+  if (!fs.existsSync(dir)) return [];
   return fs
-    .readdirSync(BOOKS_DIR, { withFileTypes: true })
+    .readdirSync(dir, { withFileTypes: true })
     .filter((d) => d.isDirectory() && NAME_RE.test(d.name))
     .map((d) => {
       try {

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>shellbook v0.6</title>
+<title>shellbook v1.0</title>
 <link rel="stylesheet" href="/vendor/xterm-css/xterm.css" />
 <style>
   html, body { height: 100%; margin: 0; }
@@ -60,11 +60,18 @@
   #chFill { height: 100%; background: #4a90e2; width: 0; }
   #chBar button { font-size: 12px; cursor: pointer; }
   #bookErr { color: #a00; }
+  /* v0.9：窄螢幕堪用（直式可讀可點；功能表橫向捲） */
+  @media (max-width: 700px) {
+    #menu { overflow-x: auto; }
+    #menu select { max-width: 120px; }
+    #book { padding: 12px; }
+    #cwd, #shellCwd { display: none; }
+  }
 </style>
 </head>
 <body>
   <header id="menu">
-    <strong>shellbook</strong><span style="color:#888">v0.6</span>
+    <strong>shellbook</strong><span style="color:#888">v1.0</span>
     <label>書籍 <select id="bookSel"><option value="">載入中…</option></select></label>
     <label>章節 <select id="chSel"><option value="">—</option></select></label>
     <label>session <select id="sessSel" title="每個 session 是獨立 shell 沙盒"><option value="">—</option></select></label>
@@ -275,8 +282,14 @@ async function loadBooks() {
   bookSel.innerHTML = list.length
     ? list.map((b) => `<option value="${b.name}">${b.title}</option>`).join('')
     : '<option value="">（尚無書籍）</option>';
-  if (list.length) await loadBook(list[0].name);
-  else bookEl.innerHTML = '<p>尚無書籍，請在 books/ 下放一本書（見 _doc/BOOK.md）。</p>';
+  if (!list.length) {
+    bookEl.innerHTML = '<p>尚無書籍，請在 books/ 下放一本書（見 _doc/BOOK.md）。</p>';
+    return;
+  }
+  // v0.8：CLI `shellbook gitbook` 帶 ?book= 預選
+  const want = new URLSearchParams(location.search).get('book');
+  const first = want && list.some((b) => b.name === want) ? want : list[0].name;
+  await loadBook(first);
 }
 
 let currentBook = null;

@@ -1,11 +1,10 @@
 // shellbook v0.3 — 執行佇列：在共用互動式 pty 上逐行執行，擷取 exit code
-// 技巧：每行後面跟一句 `echo __SHELLBOOK_END_<seq>__:$?`，
-// 用 marker 從 pty 輸出流中切出該行的結束與 exit code。
+// 技巧：每行後面跟一句 marker echo，用 marker 從 pty 輸出流中切出該行的結束與 exit code。
+// v0.8：marker 帶每 Runner 隨機鹽，避免範例輸出偽造 marker 提早結案。
 // 保證：同一時間只有一行在跑（FIFO），run 全跑失敗即停，step 一次只跑一行。
+const { randomBytes } = require('node:crypto');
 const { splitSteps } = require('./steps');
 
-const MARK_RE = /__SHELLBOOK_END_(\d+)__:(\d+)/;
-const mark = (seq) => `__SHELLBOOK_END_${seq}__`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 class Runner {
@@ -14,6 +13,8 @@ class Runner {
     this.timeoutMs = timeoutMs;
     this.maxOutputBytes = maxOutputBytes;
     this.onEvent = onEvent;
+    this.salt = randomBytes(4).toString('hex');
+    this.markRe = new RegExp(`__SB_${this.salt}_(\\d+)__:(\\d+)`);
     this.seq = 0;
     this.queue = [];
     this.busy = false;
@@ -21,12 +22,16 @@ class Runner {
     this.stepSessions = new Map(); // ws -> { blockId, code, lines, index }
   }
 
+  mark(seq) {
+    return `__SB_${this.salt}_${seq}__`;
+  }
+
   // ---- pty 輸出嗅探（server 的 onData 轉呼叫） ----
   sniff(data) {
     const a = this.active;
     if (!a || a.done) return;
     a.buf += data;
-    const m = a.buf.match(MARK_RE);
+    const m = a.buf.match(this.markRe);
     if (m && Number(m[1]) === a.seq) a.finish({ exitCode: Number(m[2]), timeout: false });
   }
 
@@ -55,7 +60,7 @@ class Runner {
       };
       this.active = state;
       this.write(line + '\n');
-      this.write(`echo ${mark(seq)}:$?\n`);
+      this.write(`echo ${this.mark(seq)}:$?\n`);
       state.timer = setTimeout(() => {
         this.write('\x03'); // 超時先 Ctrl+C
         state.timer = setTimeout(() => {
@@ -170,4 +175,4 @@ class Runner {
   }
 }
 
-module.exports = { Runner, MARK_RE };
+module.exports = { Runner };

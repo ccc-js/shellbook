@@ -1,0 +1,19 @@
+# Node CI — 跑 shellbook 全套自動化測試（含真 pty e2e＋docker build 練習）
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # 書裡會用到：gh（runner 內建）、docker（runner 內建 daemon）、cargo（這裡裝 stable）
+      - uses: dtolnay/rust-toolchain@stable
+      - run: node --version && npm --version && cargo --version && docker --version && gh --version
+      - run: npm ci
+      - run: npm test
+        env:
+          # 測試自己會處理未授權路徑；這裡確保就算 runner 有 gh auth 也不動帳號
+          GH_TOKEN: bogus-token-for-shellbook-tests

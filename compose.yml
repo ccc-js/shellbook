@@ -1,0 +1,15 @@
+# shellbook 一鍵啟動（v0.8）
+#   docker compose up --build
+# 然後開 http://localhost:3000（書選 fullstack-github 照著點）。
+# 注意：
+# - 掛載 docker.sock 是為了讓書裡的 `docker build/run` 能用宿主 daemon；
+#   不信任的書不要這樣跑（v0.5 deny-list 仍會擋系統級破壞，但 sock 本身權力很大）。
+# - workspace/ 掛出來，練習成果留在本機，下次 up 還在。
+services:
+  shellbook:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./workspace:/app/workspace
+      - /var/run/docker.sock:/var/run/docker.sock

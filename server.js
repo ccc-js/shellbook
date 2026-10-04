@@ -1,4 +1,4 @@
-// shellbook v0.5 — 多 session 沙盒＋安全防線
+// shellbook v0.8 — 多 session 沙盒＋安全防線（預設只綁 localhost）
 // - 每條 WS 一個 session：獨立 pty＋Runner，cwd=workspace/sessions/<id>/（$SHELLBOOK_WS 指向它）
 // - ?session=<id> 可 reattach；上限 maxSessions；閒置 idleMs 回收；audit 記到 logs/<id>.log
 // - run/step 全塊預檢 deny-list；手打逐行守衛（直接打字精準，方向鍵編輯過的行放行並註記）
@@ -34,6 +34,7 @@ function loadConfig() {
     return Number.isFinite(n) ? n : d;
   };
   return {
+    host: process.env.SHELLBOOK_HOST ?? file.host ?? '127.0.0.1', // v0.8：預設只綁本機
     maxSessions: num(process.env.SHELLBOOK_MAX_SESSIONS ?? file.maxSessions, 8),
     idleMs: num(process.env.SHELLBOOK_IDLE_MS ?? file.idleMs, 30 * 60 * 1000),
     sweepMs: num(process.env.SHELLBOOK_SWEEP_MS ?? file.sweepMs, 60 * 1000),
@@ -54,11 +55,11 @@ const app = express();
 app.use(express.json());
 
 app.get('/api/health', (req, res) => {
-  res.json({ ok: true, version: 'v0.6', workspace: 'workspace/', sessions: sessions.size });
+  res.json({ ok: true, version: 'v1.0', workspace: 'workspace/', sessions: sessions.size });
 });
 
 app.get('/api/config', (req, res) => {
-  res.json({ maxSessions: config.maxSessions, timeoutMs: config.timeoutMs, maxOutputBytes: config.maxOutputBytes, warn: config.warn });
+  res.json({ maxSessions: config.maxSessions, timeoutMs: config.timeoutMs, maxOutputBytes: config.maxOutputBytes, warn: config.warn, host: config.host });
 });
 
 // ---- Book API（沿用 v0.2） ----
@@ -442,7 +443,7 @@ wss.on('connection', (ws, req) => {
   touch(sess);
   ((s) => {
     ws.send(JSON.stringify({ type: 'session', id: s.id, cwd: `workspace/sessions/${s.id}/` }));
-    ws.send(JSON.stringify({ type: 'output', data: '\r\n[shellbook v0.6 connected — session sandbox]\r\n' }));
+    ws.send(JSON.stringify({ type: 'output', data: '\r\n[shellbook v1.0 connected — session sandbox]\r\n' }));
 
     ws.on('message', (raw) => {
       let msg;
@@ -507,6 +508,6 @@ wss.on('connection', (ws, req) => {
   })(sess);
 });
 
-server.listen(PORT, () => {
-  console.log(`shellbook v0.6 listening on http://localhost:${PORT} (maxSessions=${config.maxSessions})`);
+server.listen(Number(PORT), config.host, () => {
+  console.log(`shellbook v1.0 listening on http://${config.host}:${PORT} (maxSessions=${config.maxSessions})`);
 });

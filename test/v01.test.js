@@ -124,12 +124,12 @@ after(async () => {
 });
 
 // ---------- HTTP ----------
-test('GET /api/health 回 ok + v0.6', async () => {
+test('GET /api/health 回 ok + v1.0', async () => {
   const r = await fetch(`${BASE}/api/health`);
   assert.equal(r.status, 200);
   const j = await r.json();
   assert.equal(j.ok, true);
-  assert.equal(j.version, 'v0.6');
+  assert.equal(j.version, 'v1.0');
 });
 
 test('GET / 回主介面：三區骨架都在', async () => {

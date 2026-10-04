@@ -2,7 +2,23 @@
   "name": "shellbook",
   "version": "1.0.0",
   "description": "A web interface for shell, learn from book step by step.",
-  "main": "index.js",
+  "main": "server.js",
+  "bin": {
+    "shellbook": "bin/shellbook.js"
+  },
+  "files": [
+    "server.js",
+    "bin/",
+    "src/",
+    "public/",
+    "books/",
+    "config/shellbook.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "test": "node --test test/*.test.js",
     "start": "node server.js",
