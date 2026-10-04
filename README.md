@@ -1,2 +1,2 @@
 # shellbook
-A web site that combine shell and book, learn step by step.
+A web interface for shell, learn from book step by step.
