@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>shellbook v0.1</title>
+<link rel="stylesheet" href="/vendor/xterm-css/xterm.css" />
+<style>
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+         font-family: system-ui, -apple-system, "Noto Sans TC", sans-serif; }
+  #menu { flex: 0 0 36px; display: flex; align-items: center; gap: 8px; padding: 0 10px;
+          background: #1e1e1e; color: #ddd; font-size: 13px; white-space: nowrap; overflow: hidden; }
+  #menu select { max-width: 180px; }
+  #conn { width: 10px; height: 10px; border-radius: 50%; background: #888; display: inline-block; }
+  #conn.ok { background: #3fb950; } #conn.bad { background: #f85149; }
+  #menu .spacer { flex: 1; }
+  #menu button { font-size: 12px; }
+  #book { flex: 1 1 auto; overflow: auto; padding: 16px 24px; min-height: 120px; background: #fafafa; }
+  #splitter { flex: 0 0 6px; cursor: row-resize; background: #2a2a2a; }
+  #splitter:hover, #splitter.dragging { background: #4a90e2; }
+  #shell-pane { flex: 0 0 360px; display: flex; flex-direction: column; min-height: 90px; background: #000; }
+  #shell-bar { flex: 0 0 26px; display: flex; align-items: center; gap: 8px; padding: 0 8px;
+               background: #161616; color: #bbb; font-size: 12px; }
+  #terminal { flex: 1; overflow: hidden; }
+  code.k { background: #eee; padding: 0 4px; border-radius: 3px; }
+</style>
+</head>
+<body>
+  <header id="menu">
+    <strong>shellbook</strong><span style="color:#888">v0.1</span>
+    <label>書籍 <select id="bookSel" disabled><option>demo（v0.2 提供）</option></select></label>
+    <label>章節 <select id="chSel" disabled><option>—</option></select></label>
+    <button id="btnReconnect">重連</button>
+    <button id="btnInterrupt" title="送 Ctrl+C">中斷</button>
+    <span class="spacer"></span>
+    <span id="cwd">workspace/</span>
+    <span id="conn" class="bad" title="連線狀態"></span>
+  </header>
+
+  <main id="book">
+    <h2>shellbook v0.1 — Shell 通道 MVP</h2>
+    <p>這是 book 區佔位（v0.2 才載入真實書籍）。先在下方 shell 區打指令驗證連線：</p>
+    <pre><code>echo hello
+pwd
+ls
+seq 1 1000   # 長輸出測試
+sleep 10     # 用「中斷」按鈕或 Ctrl+C 停止</code></pre>
+    <p>版面：功能表 1 row ｜ book 區剩餘全部 ｜ shell 區預設 20 rows，中間灰條可上下拖曳，雙擊回 20 rows。</p>
+  </main>
+
+  <div id="splitter" title="拖曳調整 book/shell 高度（雙擊回 20 rows）"></div>
+
+  <footer id="shell-pane">
+    <div id="shell-bar">
+      <span>shell</span><span id="shellCwd">workspace/</span>
+      <span class="spacer" style="flex:1"></span>
+      <button id="btnClear">清空</button>
+      <button id="btnInt2">Ctrl+C</button>
+    </div>
+    <div id="terminal"></div>
+  </footer>
+
+<script type="module">
+import { Terminal } from '/vendor/xterm/xterm.mjs';
+import { FitAddon } from '/vendor/fit/addon-fit.mjs';
+
+const term = new Terminal({ cursorBlink: true, fontSize: 14, scrollback: 5000 });
+const fit = new FitAddon();
+term.loadAddon(fit);
+term.open(document.getElementById('terminal'));
+
+const conn = document.getElementById('conn');
+let ws = null;
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws/shell`);
+  ws.onopen = () => { conn.className = 'ok'; fit.fit();
+    ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); };
+  ws.onclose = () => { conn.className = 'bad'; };
+  ws.onerror = () => { conn.className = 'bad'; };
+  ws.onmessage = (ev) => {
+    let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg.type === 'output') term.write(msg.data);
+  };
+}
+connect();
+
+term.onData((d) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', data: d })); });
+
+const sendResize = () => { try { fit.fit(); } catch {}
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); };
+new ResizeObserver(sendResize).observe(document.getElementById('terminal'));
+window.addEventListener('resize', sendResize);
+
+document.getElementById('btnReconnect').onclick = () => { try { ws.close(); } catch {} connect(); };
+const interrupt = () => ws && ws.readyState === 1 && ws.send(JSON.stringify({ type: 'input', data: '\x03' }));
+document.getElementById('btnInterrupt').onclick = interrupt;
+document.getElementById('btnInt2').onclick = interrupt;
+document.getElementById('btnClear').onclick = () => term.clear();
+
+// ---- 中間分隔條拖曳（book ↔ shell） ----
+const splitter = document.getElementById('splitter');
+const shellPane = document.getElementById('shell-pane');
+const DEFAULT_H = 360;
+try {
+  const saved = parseInt(localStorage.getItem('shellbook.shellHeight'), 10);
+  if (saved >= 90) shellPane.style.flexBasis = saved + 'px';
+} catch {}
+requestAnimationFrame(sendResize);
+
+splitter.addEventListener('mousedown', (e) => {
+  e.preventDefault();
+  const startY = e.clientY, startH = shellPane.offsetHeight;
+  splitter.classList.add('dragging');
+  const move = (ev) => {
+    const maxH = window.innerHeight - 36 - 6 - 120;
+    const h = Math.min(Math.max(startH + (startY - ev.clientY), 90), maxH);
+    shellPane.style.flexBasis = h + 'px';
+  };
+  const up = () => {
+    document.removeEventListener('mousemove', move);
+    document.removeEventListener('mouseup', up);
+    splitter.classList.remove('dragging');
+    sendResize();
+    try { localStorage.setItem('shellbook.shellHeight', shellPane.offsetHeight); } catch {}
+  };
+  document.addEventListener('mousemove', move);
+  document.addEventListener('mouseup', up);
+});
+splitter.addEventListener('dblclick', () => {
+  shellPane.style.flexBasis = DEFAULT_H + 'px';
+  sendResize();
+  try { localStorage.setItem('shellbook.shellHeight', DEFAULT_H); } catch {}
+});
+</script>
+</body>
+</html>
