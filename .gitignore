@@ -147,3 +147,7 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# shellbook runtime: session sandboxes (keep the dir placeholder)
+workspace/*
+!workspace/.gitkeep

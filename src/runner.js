@@ -9,9 +9,11 @@ const mark = (seq) => `__SHELLBOOK_END_${seq}__`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 class Runner {
-  constructor({ write, timeoutMs = 30000 }) {
+  constructor({ write, timeoutMs = 30000, maxOutputBytes = 65536, onEvent = null }) {
     this.write = write;
     this.timeoutMs = timeoutMs;
+    this.maxOutputBytes = maxOutputBytes;
+    this.onEvent = onEvent;
     this.seq = 0;
     this.queue = [];
     this.busy = false;
@@ -43,7 +45,12 @@ class Runner {
           state.done = true;
           clearTimeout(state.timer);
           if (this.active === state) this.active = null;
-          resolve({ ...res, durationMs: Date.now() - t0, output: state.buf });
+          let output = state.buf;
+          if (output.length > this.maxOutputBytes) {
+            output = output.slice(output.length - this.maxOutputBytes)
+              + `\n[output truncated, kept last ${this.maxOutputBytes} bytes]\n`;
+          }
+          resolve({ ...res, durationMs: Date.now() - t0, output });
         },
       };
       this.active = state;
@@ -80,6 +87,11 @@ class Runner {
   handleRun(ws, { blockId, code }) {
     const send = (o) => {
       if (ws.readyState === 1) ws.send(JSON.stringify(o));
+      if (this.onEvent) {
+        try {
+          this.onEvent(o);
+        } catch { /* ignore */ }
+      }
     };
     const lines = splitSteps(String(code || ''));
     if (!lines.length) {
@@ -108,6 +120,11 @@ class Runner {
   handleStep(ws, { blockId, code }) {
     const send = (o) => {
       if (ws.readyState === 1) ws.send(JSON.stringify(o));
+      if (this.onEvent) {
+        try {
+          this.onEvent(o);
+        } catch { /* ignore */ }
+      }
     };
     code = String(code || '');
     let sess = this.stepSessions.get(ws);

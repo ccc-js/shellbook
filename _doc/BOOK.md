@@ -67,7 +67,9 @@ Markdown fenced code block 的 info string 加標籤即為可執行：
 1. **每塊都先 `cd` 回定點**：shell 是同一個 persistent pty，`cd` 會殘留。
    全跑預設失敗即停，但成功執行的 `cd` 也會殘留。範例首行固定
    `cd "$SHELLBOOK_WS"` 或 `R="$SHELLBOOK_WS/<dir>"` 配 `git -C`，
-   讓每塊獨立於執行順序。`$SHELLBOOK_WS` 由後端注入（pty env）。
+   讓每塊獨立於執行順序。`$SHELLBOOK_WS` 由後端注入（pty env）；
+   v0.5 起每個 session 有獨立沙盒，`$SHELLBOOK_WS` 指向
+   `workspace/sessions/<id>/`，寫書時當它是該 session 的根即可。
 2. **禁 pager**：`git log`、`git branch` 等會開 pager 卡住（等輸入）。
    書裡一律 `git --no-pager log ...`，或用 `--oneline`＋行數限制。
 3. **禁互動**：不用 `vim`、`read`、`git add -i`；編輯檔用

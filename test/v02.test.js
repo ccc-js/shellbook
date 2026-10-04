@@ -75,7 +75,7 @@ function makeClient() {
 before(async () => {
   serverProc = spawn('node', ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT },
+    env: { ...process.env, PORT, SHELLBOOK_MAX_SESSIONS: '64' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   await waitFor(

@@ -1,0 +1,8 @@
+{
+  "maxSessions": 8,
+  "idleMs": 1800000,
+  "sweepMs": 60000,
+  "timeoutMs": 30000,
+  "maxOutputBytes": 65536,
+  "warn": ["rm -rf", "rm -r", "mkfs", " dd ", "shutdown", "reboot", "chmod -R", "chown -R", ":(){", "curl", "wget", "> /dev/", "--no-preserve-root"]
+}

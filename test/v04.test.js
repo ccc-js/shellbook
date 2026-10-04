@@ -11,7 +11,6 @@ const PORT = process.env.TEST_PORT || '3140';
 const BASE = `http://127.0.0.1:${PORT}`;
 const WSURL = `ws://127.0.0.1:${PORT}/ws/shell`;
 const ROOT = path.join(__dirname, '..');
-const WS_DIR = path.join(ROOT, 'workspace');
 
 let serverProc = null;
 
@@ -74,7 +73,7 @@ let client = null;
 before(async () => {
   serverProc = spawn('node', ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT, SHELLBOOK_TIMEOUT_MS: '180000' },
+    env: { ...process.env, PORT, SHELLBOOK_TIMEOUT_MS: '180000', SHELLBOOK_MAX_SESSIONS: '64' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   await waitFor(
@@ -96,7 +95,7 @@ after(async () => {
   // 清場：書產生的目錄＋docker image（best-effort，不斷言）
   try {
     if (client && client.ws.readyState === 1) {
-      client.send({ type: 'run', blockId: 'cleanup', code: `rm -rf "${WS_DIR}/gitbook-play" "${WS_DIR}/demo-proj" && echo CLEANED` });
+      client.send({ type: 'run', blockId: 'cleanup', code: 'rm -rf "$SHELLBOOK_WS/gitbook-play" "$SHELLBOOK_WS/demo-proj" && echo CLEANED' });
       await client.next((m) => m.type === 'runDone' && m.blockId === 'cleanup');
       await client.close();
     }
@@ -157,7 +156,7 @@ test('gitbook：全書 4 章所有範例跑完', async () => {
 });
 
 test('gitbook 跑完：本地遠端真的有東西', async () => {
-  client.send({ type: 'run', blockId: 'verify-git', code: `git --git-dir="${WS_DIR}/gitbook-play/upstream.git" log --oneline | head -3` });
+  client.send({ type: 'run', blockId: 'verify-git', code: 'git --git-dir="$SHELLBOOK_WS/gitbook-play/upstream.git" rev-parse HEAD' });
   const done = await client.next((m) => m.type === 'runDone' && m.blockId === 'verify-git');
   assert.equal(done.ok, true);
 });
@@ -172,11 +171,11 @@ test('fullstack 跑完：三件交付物都在', async () => {
     type: 'run',
     blockId: 'verify-fs',
     code: [
-      `test -f "${WS_DIR}/demo-proj/sum.js" && echo HAVE_NODE`,
-      `test -f "${WS_DIR}/demo-proj/rust-app/src/main.rs" && echo HAVE_RUST`,
-      `test -f "${WS_DIR}/demo-proj/Dockerfile" && echo HAVE_DOCKER`,
-      `test -f "${WS_DIR}/demo-proj/.github/workflows/ci.yml" && echo HAVE_CI`,
-      `docker run --rm shellbook-demo`,
+      'test -f "$SHELLBOOK_WS/demo-proj/sum.js" && echo HAVE_NODE',
+      'test -f "$SHELLBOOK_WS/demo-proj/rust-app/src/main.rs" && echo HAVE_RUST',
+      'test -f "$SHELLBOOK_WS/demo-proj/Dockerfile" && echo HAVE_DOCKER',
+      'test -f "$SHELLBOOK_WS/demo-proj/.github/workflows/ci.yml" && echo HAVE_CI',
+      'docker run --rm shellbook-demo',
     ].join('\n'),
   });
   const started = await client.next((m) => m.type === 'runStarted' && m.blockId === 'verify-fs');

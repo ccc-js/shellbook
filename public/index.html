@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>shellbook v0.4</title>
+<title>shellbook v0.5</title>
 <link rel="stylesheet" href="/vendor/xterm-css/xterm.css" />
 <style>
   html, body { height: 100%; margin: 0; }
@@ -46,9 +46,12 @@
 </head>
 <body>
   <header id="menu">
-    <strong>shellbook</strong><span style="color:#888">v0.4</span>
+    <strong>shellbook</strong><span style="color:#888">v0.5</span>
     <label>書籍 <select id="bookSel"><option value="">載入中…</option></select></label>
     <label>章節 <select id="chSel"><option value="">—</option></select></label>
+    <label>session <select id="sessSel" title="每個 session 是獨立 shell 沙盒"><option value="">—</option></select></label>
+    <button id="btnNewSess" title="開新 session（獨立沙盒）">＋</button>
+    <button id="btnDelSess" title="刪除目前 session（含沙盒目錄）">－</button>
     <button id="btnReconnect">重連</button>
     <button id="btnInterrupt" title="送 Ctrl+C">中斷</button>
     <span class="spacer"></span>
@@ -82,10 +85,29 @@ term.loadAddon(fit);
 term.open(document.getElementById('terminal'));
 
 const conn = document.getElementById('conn');
+const sessSel = document.getElementById('sessSel');
+const cwdEl = document.getElementById('cwd');
 let ws = null;
+let sessionId = null;
+let warnList = [];
 
-function connect() {
-  ws = new WebSocket(`ws://${location.host}/ws/shell`);
+fetch('/api/config').then((r) => r.json()).then((c) => { warnList = c.warn || []; }).catch(() => {});
+const shortId = (id) => (id || '').slice(0, 8);
+
+async function refreshSessions() {
+  try {
+    const r = await fetch('/api/sessions');
+    const list = await r.json();
+    sessSel.innerHTML = list.map((s) =>
+      `<option value="${s.id}"${s.id === sessionId ? ' selected' : ''}>${shortId(s.id)}${s.clients > 1 ? ` ×${s.clients}` : ''}</option>`
+    ).join('') || '<option value="">—</option>';
+  } catch { /* ignore */ }
+}
+
+function connect(id) {
+  try { if (ws) ws.close(); } catch {}
+  const q = id ? `?session=${encodeURIComponent(id)}` : '';
+  ws = new WebSocket(`ws://${location.host}/ws/shell${q}`);
   ws.onopen = () => { conn.className = 'ok'; fit.fit();
     ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); };
   ws.onclose = () => { conn.className = 'bad'; };
@@ -93,10 +115,30 @@ function connect() {
   ws.onmessage = (ev) => {
     let msg; try { msg = JSON.parse(ev.data); } catch { return; }
     if (msg.type === 'output') term.write(msg.data);
-    else onRunMsg(msg); // v0.3：單步/全跑進度
+    else if (msg.type === 'session') {
+      sessionId = msg.id;
+      cwdEl.textContent = msg.cwd;
+      document.getElementById('shellCwd').textContent = msg.cwd;
+      refreshSessions();
+    } else if (msg.type === 'session-ended') {
+      term.write(`\r\n\x1b[33m[session 已結束：${msg.reason}，幫你開一個新的]\x1b[0m\r\n`);
+      sessionId = null;
+      setTimeout(() => connect(), 500);
+    } else if (msg.type === 'error' && msg.error === 'max-sessions') {
+      alert(`session 已滿（上限 ${msg.max}），請先刪掉不用的 session（－鈕）`);
+    } else onRunMsg(msg); // v0.3：單步/全跑進度；v0.5 加 blocked
   };
 }
 connect();
+
+document.getElementById('btnNewSess').onclick = () => connect();
+sessSel.onchange = () => { if (sessSel.value) connect(sessSel.value); };
+document.getElementById('btnDelSess').onclick = async () => {
+  if (!sessionId || !confirm(`刪除 session ${shortId(sessionId)}？沙盒目錄會一起清掉。`)) return;
+  try { await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }); } catch {}
+  sessionId = null;
+  connect();
+};
 
 term.onData((d) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', data: d })); });
 
@@ -105,7 +147,7 @@ const sendResize = () => { try { fit.fit(); } catch {}
 new ResizeObserver(sendResize).observe(document.getElementById('terminal'));
 window.addEventListener('resize', sendResize);
 
-document.getElementById('btnReconnect').onclick = () => { try { ws.close(); } catch {} connect(); };
+document.getElementById('btnReconnect').onclick = () => connect(sessionId); // 重連回同一 session
 const interrupt = () => ws && ws.readyState === 1 && ws.send(JSON.stringify({ type: 'input', data: '\x03' }));
 document.getElementById('btnInterrupt').onclick = interrupt;
 document.getElementById('btnInt2').onclick = interrupt;
@@ -233,14 +275,18 @@ bookEl.addEventListener('click', async (e) => {
     setTimeout(() => (btn.textContent = '複製'), 1200);
   } else if (!needConn() || box.classList.contains('busy')) {
     return;
-  } else if (btn.dataset.act === 'step') {
-    setBusy(box, true);
-    ws.send(JSON.stringify({ type: 'step', blockId: id, code }));
-    term.focus();
-  } else if (btn.dataset.act === 'run') {
-    setBusy(box, true);
-    setProg(box, '全跑執行中…');
-    ws.send(JSON.stringify({ type: 'run', blockId: id, code }));
+  } else if (btn.dataset.act === 'step' || btn.dataset.act === 'run') {
+    // v0.5：危險模式二次確認（後端還會再擋一次，這裡是先提醒）
+    const hit = warnList.find((w) => (` ${code.toLowerCase()} `).includes(` ${w.toLowerCase()} `) || code.includes(w));
+    if (hit && !confirm(`⚠️ 範例含有「${hit}」，可能有風險，確定執行？`)) return;
+    if (btn.dataset.act === 'step') {
+      setBusy(box, true);
+      ws.send(JSON.stringify({ type: 'step', blockId: id, code }));
+    } else {
+      setBusy(box, true);
+      setProg(box, '全跑執行中…');
+      ws.send(JSON.stringify({ type: 'run', blockId: id, code }));
+    }
     term.focus();
   }
 });
@@ -275,6 +321,9 @@ function onRunMsg(msg) {
       }
       if (msg.error) setProg(box, `單步：${msg.error}`, 'fail');
     }
+  } else if (msg.type === 'blocked') {
+    setBusy(box, false);
+    setProg(box, `⛔ 已阻擋：第 ${msg.index + 1} 行危險（${msg.reason}），整塊未執行`, 'fail');
   } else if (msg.type === 'runDone') {
     setBusy(box, false);
     if (msg.ok) setProg(box, `✓ 全跑完成`, 'ok');

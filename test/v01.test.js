@@ -107,7 +107,7 @@ function makeClient() {
 before(async () => {
   serverProc = spawn('node', ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT },
+    env: { ...process.env, PORT, SHELLBOOK_MAX_SESSIONS: '64' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   serverProc.stdout.on('data', (d) => process.stdout.write(`[srv] ${d}`));
@@ -124,12 +124,12 @@ after(async () => {
 });
 
 // ---------- HTTP ----------
-test('GET /api/health 回 ok + v0.4', async () => {
+test('GET /api/health 回 ok + v0.5', async () => {
   const r = await fetch(`${BASE}/api/health`);
   assert.equal(r.status, 200);
   const j = await r.json();
   assert.equal(j.ok, true);
-  assert.equal(j.version, 'v0.4');
+  assert.equal(j.version, 'v0.5');
 });
 
 test('GET / 回主介面：三區骨架都在', async () => {
