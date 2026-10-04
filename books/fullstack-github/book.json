@@ -1,0 +1,7 @@
+{
+  "name": "fullstack-github",
+  "title": "軟體工程實戰 GitHub 篇：授權＋建倉＋fork/PR＋Actions",
+  "version": "0.1.0",
+  "defaultCwd": "workspace/",
+  "chapters": ["ch01-toolchain.md", "ch02-git.md", "ch03-node.md", "ch04-rust.md", "ch05-docker-ci.md", "ch06-github-auth.md", "ch07-create-push.md", "ch08-fork-pr.md", "ch09-actions-cicd.md"]
+}

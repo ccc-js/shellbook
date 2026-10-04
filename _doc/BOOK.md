@@ -90,3 +90,11 @@ Markdown fenced code block 的 info string 加標籤即為可執行：
    同理：寫書時每個新工具先在測試環境真跑一次（v0.4 的 e2e 就是幹這個的）。
 9. **node --test 別加尾斜線**：`node --test test/` 在 node 24 會被當成
    模組路徑而報錯，要寫 `node --test test/*.test.js`（v0.1 親踩）。
+10. **GitHub 章節：guarded-auto＋手動並陳（v0.7 fullstack-github 模式）**：
+    會動帳號的指令（repo create/fork/pr create/push）一律包在
+    `if gh auth status >/dev/null 2>&1; then <自動> else <手動指引 echo>; fi`。
+    兩分支都 `echo` 同一個狀態前綴（如 `GH_LOGGED_IN`／`GH_NEED_LOGIN`），
+    `expect:` 就對前綴（如 `expect:GH_`），自動手動兩條路都綠。
+    - `gh auth login`（互動）只准出現在無標籤 fence 或正文，不可執行。
+    - `gh repo delete` 禁止出現在任何可執行塊。
+    - push 類的手動分支只「印」指令不執行，由學習者貼上跑。
