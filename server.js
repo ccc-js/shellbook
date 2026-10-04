@@ -13,12 +13,14 @@ const books = require('./src/books');
 const { Runner } = require('./src/runner');
 const guard = require('./src/guard');
 const { splitSteps } = require('./src/steps');
+const progress = require('./src/progress');
 
 const PORT = process.env.PORT || 3000;
 const ROOT = __dirname;
 const WORKSPACE = path.join(ROOT, 'workspace');
 const SESSIONS_DIR = path.join(WORKSPACE, 'sessions');
 const LOGS_DIR = path.join(ROOT, 'logs');
+const NOTES_DIR = path.join(ROOT, 'notes');
 const SHELL = process.env.SHELL || 'bash';
 
 // ---- config（預設＋config/shellbook.json＋env 覆寫） ----
@@ -46,12 +48,13 @@ const config = loadConfig();
 // 被 kill 的 server 殘留目錄是惰性的（沒有 pty 活著），由 DELETE／閒置回收或手動清理。
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 fs.mkdirSync(LOGS_DIR, { recursive: true });
+fs.mkdirSync(NOTES_DIR, { recursive: true });
 
 const app = express();
 app.use(express.json());
 
 app.get('/api/health', (req, res) => {
-  res.json({ ok: true, version: 'v0.5', workspace: 'workspace/', sessions: sessions.size });
+  res.json({ ok: true, version: 'v0.6', workspace: 'workspace/', sessions: sessions.size });
 });
 
 app.get('/api/config', (req, res) => {
@@ -79,6 +82,103 @@ app.get('/api/books/:name/ch/:ch', (req, res) => {
     sendBookError(res, e);
   }
 });
+
+// ---- Progress API（v0.6：跨 tab 的學習進度） ----
+app.get('/api/progress/:book', (req, res) => {
+  try {
+    res.json(progress.getBook(req.params.book));
+  } catch (e) {
+    sendBookError(res, e);
+  }
+});
+app.delete('/api/progress/:book', (req, res) => {
+  try {
+    res.json(progress.reset(req.params.book, req.query.chapter));
+  } catch (e) {
+    sendBookError(res, e);
+  }
+});
+
+// ---- Notes API（v0.6：把 session 的 audit 匯出成學習筆記） ----
+app.get('/api/notes', (req, res) => {
+  try {
+    const files = fs.existsSync(NOTES_DIR)
+      ? fs.readdirSync(NOTES_DIR).filter((f) => f.endsWith('.md')).sort().reverse()
+      : [];
+    res.json(files.map((f) => {
+      const st = fs.statSync(path.join(NOTES_DIR, f));
+      return { file: f, size: st.size, mtime: st.mtime };
+    }));
+  } catch (e) {
+    sendBookError(res, e);
+  }
+});
+app.post('/api/notes/export', (req, res) => {
+  try {
+    const session = String((req.body && req.body.session) || '');
+    if (!/^[A-Za-z0-9-]{8,}$/.test(session)) return res.status(400).json({ error: 'bad session' });
+    const logf = path.join(LOGS_DIR, `${session}.log`);
+    if (!fs.existsSync(logf)) return res.status(404).json({ error: 'no log for session' });
+    const entries = fs.readFileSync(logf, 'utf8').split('\n').filter(Boolean).map((l) => {
+      try {
+        return JSON.parse(l);
+      } catch {
+        return null;
+      }
+    }).filter(Boolean);
+    const markdown = buildNotes(session, entries);
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
+    const file = `notes-${stamp}-${session.slice(0, 8)}.md`;
+    fs.writeFileSync(path.join(NOTES_DIR, file), markdown);
+    res.json({ ok: true, file, markdown });
+  } catch (e) {
+    sendBookError(res, e);
+  }
+});
+
+function buildNotes(session, entries) {
+  const out = ['# shellbook 學習筆記', '', `- session: ${session}`, `- 匯出：${new Date().toISOString()}`, ''];
+  const order = [];
+  const groups = new Map(); // blockId -> { book, ch, steps: Map(index -> {line, exitCode, durationMs, output}) }
+  const blocked = [];
+  for (const e of entries) {
+    if (e.kind === 'run' || e.kind === 'step') {
+      if (!groups.has(e.blockId)) {
+        groups.set(e.blockId, { book: e.book || null, ch: e.ch || null, steps: new Map() });
+        order.push(e.blockId);
+      }
+    } else if (e.kind === 'result' || e.kind === 'stepResult') {
+      if (!groups.has(e.blockId)) {
+        groups.set(e.blockId, { book: null, ch: null, steps: new Map() });
+        order.push(e.blockId);
+      }
+      groups.get(e.blockId).steps.set(e.index, {
+        line: e.line, exitCode: e.exitCode, durationMs: e.durationMs, output: e.output || '',
+      });
+    } else if (e.kind === 'blocked') {
+      blocked.push(e);
+    }
+  }
+  for (const id of order) {
+    const g = groups.get(id);
+    out.push(`## ${id}${g.book ? `（${g.book}${g.ch ? `/${g.ch}` : ''}）` : ''}`, '');
+    const idxs = [...g.steps.keys()].sort((a, b) => a - b);
+    if (!idxs.length) {
+      out.push('（已送出，尚無執行結果）', '');
+      continue;
+    }
+    for (const i of idxs) {
+      const s = g.steps.get(i);
+      out.push(`### 第 ${i + 1} 步（exit=${s.exitCode}${s.durationMs != null ? `，${s.durationMs}ms` : ''}）`, '', '```sh', s.line || '', '```', '');
+      if (s.output && s.output.trim()) out.push('輸出：', '', '```', s.output.trim().slice(-3000), '```', '');
+    }
+  }
+  if (blocked.length) {
+    out.push('## 被阻擋的指令', '');
+    for (const b of blocked) out.push(`- ${b.blockId || ''} 第 ${(b.index ?? 0) + 1} 行（${b.reason || ''}）：\`${b.line || ''}\``, '');
+  }
+  return out.join('\n');
+}
 
 // ---- Session API ----
 app.get('/api/sessions', (req, res) => {
@@ -109,6 +209,7 @@ function audit(sess, entry) {
     let e = entry;
     if (e.code && e.code.length > 2000) e = { ...e, code: e.code.slice(0, 2000) + '…[truncated]' };
     if (e.line && e.line.length > 500) e = { ...e, line: e.line.slice(0, 500) + '…' };
+    if (e.output && e.output.length > 2048) e = { ...e, output: e.output.slice(-2048) + '\n…[output truncated]' };
     fs.appendFileSync(path.join(LOGS_DIR, `${sess.id}.log`), JSON.stringify({ t: new Date().toISOString(), session: sess.id, ...e }) + '\n');
   } catch { /* audit 不該搞死主流程 */ }
 }
@@ -146,6 +247,7 @@ function createSession() {
   const sess = {
     id, dir, pty: null, runner: null,
     clients: new Set(), manual: new Map(),
+    runs: new Map(), ctxq: new Map(), // runs: ws -> Map(blockId -> {book,ch,outputs}); ctxq: ws -> [{kind,blockId,book,ch}]
     createdAt: Date.now(), lastActive: Date.now(),
   };
   sess.runner = new Runner({
@@ -154,9 +256,28 @@ function createSession() {
     },
     timeoutMs: config.timeoutMs,
     maxOutputBytes: config.maxOutputBytes,
-    onEvent: (e) => {
+    onEvent: (e, ws) => {
       if (e.type === 'result' || e.type === 'stepResult') {
-        audit(sess, { kind: e.type, blockId: e.blockId, index: e.index, line: e.line, exitCode: e.exitCode, timeout: !!e.timeout, durationMs: e.durationMs });
+        audit(sess, { kind: e.type, blockId: e.blockId, index: e.index, line: e.line, exitCode: e.exitCode, timeout: !!e.timeout, durationMs: e.durationMs, output: e.output });
+        const acc = sess.runs.get(ws)?.get(e.blockId);
+        if (acc && typeof e.output === 'string') acc.outputs.push(e.output);
+        if (acc && e.exitCode !== undefined) acc.lastExit = e.exitCode;
+      }
+      if (e.type === 'runStarted' || e.type === 'stepStarted') {
+        // FIFO：request 時排的 ctx 在 started 時兌現
+        const q = sess.ctxq.get(ws);
+        const ctx = q && q.length ? q.shift() : null;
+        if (ctx && ctx.book) {
+          let m = sess.runs.get(ws);
+          if (!m) {
+            m = new Map();
+            sess.runs.set(ws, m);
+          }
+          m.set(e.blockId, { book: ctx.book, ch: ctx.ch || null, outputs: [] });
+        }
+      }
+      if (e.type === 'runDone' || (e.type === 'stepResult' && e.done)) {
+        finishTrackedRun(sess, ws, e);
       }
     },
   });
@@ -168,6 +289,47 @@ function createSession() {
 
 function touch(sess) {
   sess.lastActive = Date.now();
+}
+
+// v0.6：run/step 帶 book+ch 時，結束後記進度＋對 expect 關鍵字
+function lookupExpect(book, ch, blockId) {
+  try {
+    if (!book || !ch) return null;
+    const d = books.getChapter(book, ch);
+    const b = d.blocks.find((x) => x.id === blockId);
+    return b && b.expect ? b.expect : null;
+  } catch {
+    return null;
+  }
+}
+
+function pushRunCtx(sess, ws, kind, blockId, book, ch) {
+  if (!book) return;
+  let q = sess.ctxq.get(ws);
+  if (!q) {
+    q = [];
+    sess.ctxq.set(ws, q);
+  }
+  q.push({ kind, blockId, book, ch: ch || null });
+}
+
+function finishTrackedRun(sess, ws, e) {
+  const m = sess.runs.get(ws);
+  const acc = m && m.get(e.blockId);
+  if (m) m.delete(e.blockId);
+  else {
+    // 沒有 acc：可能是沒帶 book 的 run，或 empty run 的孤兒 ctx，清一個
+    const q = sess.ctxq.get(ws);
+    if (q && q.length) q.shift();
+  }
+  if (!acc) return;
+  const failed = e.ok === false || !!e.error || (e.exitCode !== null && e.exitCode !== undefined && e.exitCode !== 0);
+  const keyword = lookupExpect(acc.book, acc.ch, e.blockId);
+  const met = keyword ? acc.outputs.join('\n').includes(keyword) : null;
+  progress.record(acc.book, e.blockId, { status: failed ? 'failed' : 'done', exitCode: e.exitCode ?? acc.lastExit ?? null, expectMet: met });
+  if (keyword && ws.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'expect', blockId: e.blockId, keyword, met }));
+  }
 }
 
 function destroySession(id, reason = 'closed') {
@@ -280,7 +442,7 @@ wss.on('connection', (ws, req) => {
   touch(sess);
   ((s) => {
     ws.send(JSON.stringify({ type: 'session', id: s.id, cwd: `workspace/sessions/${s.id}/` }));
-    ws.send(JSON.stringify({ type: 'output', data: '\r\n[shellbook v0.5 connected — session sandbox]\r\n' }));
+    ws.send(JSON.stringify({ type: 'output', data: '\r\n[shellbook v0.6 connected — session sandbox]\r\n' }));
 
     ws.on('message', (raw) => {
       let msg;
@@ -308,7 +470,8 @@ wss.on('connection', (ws, req) => {
           if (typeof msg.code === 'string') {
             const lines = precheck(ws, s, 'run', msg.blockId, msg.code);
             if (lines && lines.length) {
-              audit(s, { kind: 'run', blockId: msg.blockId, lines: lines.length });
+              pushRunCtx(s, ws, 'run', msg.blockId, msg.book, msg.ch);
+              audit(s, { kind: 'run', blockId: msg.blockId, book: msg.book || null, ch: msg.ch || null, lines: lines.length });
               s.runner.handleRun(ws, { blockId: msg.blockId, code: msg.code });
             } else if (lines) {
               s.runner.handleRun(ws, { blockId: msg.blockId, code: msg.code }); // 空：讓 runner 回 empty
@@ -319,7 +482,8 @@ wss.on('connection', (ws, req) => {
           if (typeof msg.code === 'string') {
             const lines = precheck(ws, s, 'step', msg.blockId, msg.code);
             if (lines && lines.length) {
-              audit(s, { kind: 'step', blockId: msg.blockId, lines: lines.length });
+              pushRunCtx(s, ws, 'step', msg.blockId, msg.book, msg.ch);
+              audit(s, { kind: 'step', blockId: msg.blockId, book: msg.book || null, ch: msg.ch || null, lines: lines.length });
               s.runner.handleStep(ws, { blockId: msg.blockId, code: msg.code });
             } else if (lines) {
               s.runner.handleStep(ws, { blockId: msg.blockId, code: msg.code });
@@ -335,6 +499,8 @@ wss.on('connection', (ws, req) => {
     ws.on('close', () => {
       s.clients.delete(ws);
       s.manual.delete(ws);
+      s.runs.delete(ws);
+      s.ctxq.delete(ws);
       s.runner.dropWs(ws);
       touch(s);
     });
@@ -342,5 +508,5 @@ wss.on('connection', (ws, req) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`shellbook v0.5 listening on http://localhost:${PORT} (maxSessions=${config.maxSessions})`);
+  console.log(`shellbook v0.6 listening on http://localhost:${PORT} (maxSessions=${config.maxSessions})`);
 });

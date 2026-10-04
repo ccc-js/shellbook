@@ -89,7 +89,7 @@ class Runner {
       if (ws.readyState === 1) ws.send(JSON.stringify(o));
       if (this.onEvent) {
         try {
-          this.onEvent(o);
+          this.onEvent(o, ws);
         } catch { /* ignore */ }
       }
     };
@@ -106,6 +106,7 @@ class Runner {
         send({
           type: 'result', blockId, index: i, total: lines.length,
           line: lines[i], exitCode: r.exitCode, timeout: !!r.timeout, durationMs: r.durationMs,
+          output: r.output,
         });
         if (r.timeout || r.exitCode !== 0) {
           send({ type: 'runDone', blockId, ok: false, failedIndex: i, exitCode: r.exitCode, timeout: !!r.timeout });
@@ -122,7 +123,7 @@ class Runner {
       if (ws.readyState === 1) ws.send(JSON.stringify(o));
       if (this.onEvent) {
         try {
-          this.onEvent(o);
+          this.onEvent(o, ws);
         } catch { /* ignore */ }
       }
     };
@@ -152,6 +153,7 @@ class Runner {
       send({
         type: 'stepResult', blockId, index: i, total: sess.lines.length,
         line, exitCode: r.exitCode, timeout: !!r.timeout, durationMs: r.durationMs, done,
+        output: r.output,
       });
       if (done) this.stepSessions.delete(ws);
     });

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>shellbook v0.5</title>
+<title>shellbook v0.6</title>
 <link rel="stylesheet" href="/vendor/xterm-css/xterm.css" />
 <style>
   html, body { height: 100%; margin: 0; }
@@ -41,12 +41,30 @@
   .codeblock .st-ok { background: #e6f4ea; border-left-color: #34a853; }
   .codeblock .st-fail { background: #fdecea; border-left-color: #ea4335; }
   .codeblock.busy button[data-act="step"], .codeblock.busy button[data-act="run"] { opacity: .4; pointer-events: none; }
+  .codeblock.done { border-color: #34a853; }
+  .codeblock.failed { border-color: #ea4335; }
+  .codeblock code.lines { counter-reset: ln; }
+  .codeblock code.lines .cl::before { counter-increment: ln; content: counter(ln); display: inline-block;
+    width: 2em; margin-right: 8px; color: #999; text-align: right; user-select: none; }
+  .codeblock .cmt { color: #2e7d32; }
+  .cb-badge { font-size: 11px; border-radius: 3px; padding: 0 6px; }
+  .cb-badge.done { background: #34a853; color: #fff; }
+  .cb-badge.failed { background: #ea4335; color: #fff; }
+  .cb-exp { font-size: 12px; padding: 2px 8px; }
+  .cb-exp.ok { color: #137333; }
+  .cb-exp.fail { color: #a00; }
+  .cb-hint { font-size: 12px; background: #fff8e1; color: #5d4037; padding: 4px 8px; }
+  #chBar { position: sticky; top: 0; z-index: 1; background: #fff; border: 1px solid #ddd; border-radius: 6px;
+    padding: 6px 10px; margin-bottom: 12px; display: flex; gap: 8px; align-items: center; font-size: 13px; }
+  #chBar .track { flex: 1; height: 8px; background: #eee; border-radius: 4px; overflow: hidden; }
+  #chFill { height: 100%; background: #4a90e2; width: 0; }
+  #chBar button { font-size: 12px; cursor: pointer; }
   #bookErr { color: #a00; }
 </style>
 </head>
 <body>
   <header id="menu">
-    <strong>shellbook</strong><span style="color:#888">v0.5</span>
+    <strong>shellbook</strong><span style="color:#888">v0.6</span>
     <label>書籍 <select id="bookSel"><option value="">載入中…</option></select></label>
     <label>章節 <select id="chSel"><option value="">—</option></select></label>
     <label>session <select id="sessSel" title="每個 session 是獨立 shell 沙盒"><option value="">—</option></select></label>
@@ -54,6 +72,7 @@
     <button id="btnDelSess" title="刪除目前 session（含沙盒目錄）">－</button>
     <button id="btnReconnect">重連</button>
     <button id="btnInterrupt" title="送 Ctrl+C">中斷</button>
+    <button id="btnNotes" title="把本 session 的執行紀錄匯出成筆記">匯出筆記</button>
     <span class="spacer"></span>
     <span id="cwd">workspace/</span>
     <span id="conn" class="bad" title="連線狀態"></span>
@@ -67,6 +86,7 @@
     <div id="shell-bar">
       <span>shell</span><span id="shellCwd">workspace/</span>
       <span class="spacer" style="flex:1"></span>
+      <span title="焦點在 terminal 時：Ctrl/⌘+Enter 全跑目前範例，Shift+Enter 單步">⌘↵ 全跑 · ⇧↵ 單步</span>
       <button id="btnClear">清空</button>
       <button id="btnInt2">Ctrl+C</button>
     </div>
@@ -114,7 +134,7 @@ function connect(id) {
   ws.onerror = () => { conn.className = 'bad'; };
   ws.onmessage = (ev) => {
     let msg; try { msg = JSON.parse(ev.data); } catch { return; }
-    if (msg.type === 'output') term.write(msg.data);
+    if (msg.type === 'output') { term.write(msg.data); pushOut(msg.data); }
     else if (msg.type === 'session') {
       sessionId = msg.id;
       cwdEl.textContent = msg.cwd;
@@ -140,7 +160,43 @@ document.getElementById('btnDelSess').onclick = async () => {
   connect();
 };
 
+// v0.6：匯出本 session 的學習筆記（下載 markdown）
+document.getElementById('btnNotes').onclick = async () => {
+  if (!sessionId) return alert('尚無 session');
+  const r = await fetch('/api/notes/export', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session: sessionId }),
+  });
+  if (!r.ok) return alert(`匯出失敗：${r.status}`);
+  const j = await r.json();
+  const blob = new Blob([j.markdown], { type: 'text/markdown' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = j.file;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+};
+
 term.onData((d) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', data: d })); });
+
+// v0.6：terminal 內輸出滾動緩衝（錯誤提示用）＋快捷鍵
+let lastOut = '';
+function pushOut(data) {
+  lastOut = (lastOut + data.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')).slice(-4000);
+}
+const HINTS = [
+  [/not a git repository/i, '看起來不在 git 倉庫裡：先跑 ch02 建倉，或 cd 到對的目錄再試'],
+  [/CONFLICT/, '合併衝突了：照 ch03 範例 3 看狀態、解掉再 commit'],
+  [/failed to push|fetch first|non-fast-forward|rejected/i, 'push 被拒：先確認 remote（ch04）、對方有沒有新 commit'],
+  [/command not found.*(cargo|docker|gh|node|npm)/i, '工具沒裝或不在 PATH：回 ch01 工具鏈盤點'],
+  [/Cannot find module|ModuleNotFound/i, '模組找不到：檢查路徑，或先跑 ch03 把骨架建起來'],
+  [/permission denied/i, '權限不足：確認路徑在沙盒內、檔案真的存在'],
+  [/No such file|not found.*file|Is a directory/i, '路徑不對：pwd 看一下位置、ls 確認檔名'],
+];
+function hintFor(out) {
+  for (const [re, t] of HINTS) if (re.test(out)) return t;
+  return null;
+}
 
 const sendResize = () => { try { fit.fit(); } catch {}
   if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); };
@@ -174,9 +230,19 @@ function parseInfo(info) {
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 // 章節渲染：非 code 段走 marked，fence 自行處理以精準掛按鈕
+// v0.6：code 行號＋註解色；頂部章節列（進度條＋重跑/重置）
+function codeHtml(code) {
+  return code.split('\n').map((l, i) =>
+    `<span class="cl${/^\s*#/.test(l) ? ' cmt' : ''}" data-i="${i}">${esc(l) || ' '}</span>`
+  ).join('\n');
+}
 function renderChapter(markdown, base) {
   const re = /```([^\n]*)\n([\s\S]*?)(?:```|$)/g;
   let last = 0, m, n = 0, html = '';
+  html += `<div id="chBar"><span id="chProg">本章進度載入中…</span><div class="track"><div id="chFill"></div></div>`
+    + `<button data-book-act="rerun" title="清掉本章執行痕跡再跑一次（不動後端進度）">重跑本章</button>`
+    + `<button data-book-act="reset-ch" title="清掉本章的後端進度">重置本章</button>`
+    + `<button data-book-act="reset-book" title="清掉整本書的後端進度">重置本書</button></div>`;
   while ((m = re.exec(markdown)) !== null) {
     html += marked.parse(markdown.slice(last, m.index));
     last = m.index + m[0].length;
@@ -191,7 +257,7 @@ function renderChapter(markdown, base) {
         + `<span>${esc(lang)} · ${code.split('\n').length} 行</span>`
         + `<span class="spacer"></span>`
         + `<button data-act="step">單步 ▶|</button><button data-act="run">全跑 ▶▶</button><button data-act="copy">複製</button></div>`
-        + `<pre><code>${esc(code)}</code></pre>`
+        + `<pre><code class="lines">${codeHtml(code)}</code></pre>`
         + `<div class="cb-progress">尚未執行</div>`
         + (hints ? `<div class="cb-note">${hints}</div>` : '')
         + `</div>`;
@@ -213,8 +279,12 @@ async function loadBooks() {
   else bookEl.innerHTML = '<p>尚無書籍，請在 books/ 下放一本書（見 _doc/BOOK.md）。</p>';
 }
 
+let currentBook = null;
+let currentCh = null; // 章檔基名，如 ch01-hello
+
 async function loadBook(name) {
   bookSel.value = name;
+  currentBook = name;
   const r = await fetch(`/api/books/${encodeURIComponent(name)}`);
   if (!r.ok) { bookEl.innerHTML = `<p id="bookErr">載入書籍失敗：${r.status}</p>`; return; }
   const book = await r.json();
@@ -224,12 +294,79 @@ async function loadBook(name) {
 
 async function loadChapter(name, file) {
   chSel.value = file;
+  currentBook = name;
   const base = file.replace(/\.md$/, '');
+  currentCh = base;
   const r = await fetch(`/api/books/${encodeURIComponent(name)}/ch/${encodeURIComponent(base)}`);
   if (!r.ok) { bookEl.innerHTML = `<p id="bookErr">載入章節失敗：${r.status}</p>`; return; }
   const ch = await r.json();
+  // 清掉上章的執行態
+  for (const k of Object.keys(blockLines)) delete blockLines[k];
+  for (const k of Object.keys(blockStatus)) delete blockStatus[k];
   bookEl.innerHTML = renderChapter(ch.markdown, base);
   bookEl.scrollTop = 0;
+  const first = bookEl.querySelector('.codeblock');
+  lastBlock = first ? first.dataset.blockId : null;
+  paintProgress();
+}
+
+// v0.6：以後端進度重繪徽章＋章節進度條（重進還在）
+let progCache = {};
+async function paintProgress() {
+  if (!currentBook) return;
+  try {
+    const r = await fetch(`/api/progress/${encodeURIComponent(currentBook)}`);
+    progCache = (await r.json()).blocks || {};
+  } catch { progCache = {}; }
+  let done = 0, total = 0;
+  bookEl.querySelectorAll('.codeblock').forEach((box) => {
+    const id = box.dataset.blockId;
+    total++;
+    box.classList.remove('done', 'failed');
+    const old = box.querySelector('.cb-badge');
+    if (old) old.remove();
+    const e = progCache[id];
+    if (e && (e.status === 'done' || e.status === 'failed')) {
+      if (e.status === 'done') done++;
+      box.classList.add(e.status);
+      const s = document.createElement('span');
+      s.className = `cb-badge ${e.status}`;
+      s.textContent = e.status === 'done'
+        ? `✓ 已完成${e.expectMet === true ? ' · 觀察✓' : e.expectMet === false ? ' · 觀察✗' : ''}（${e.runs} 次）`
+        : `✗ 上次失敗（${e.runs} 次）`;
+      box.querySelector('.cb-bar').appendChild(s);
+      const p = progOf(box);
+      if (p && p.textContent === '尚未執行') {
+        setProg(box, e.status === 'done' ? `上次：✓ 完成` : `上次：✗ 失敗`, e.status);
+      }
+    }
+  });
+  const label = document.getElementById('chProg');
+  const fill = document.getElementById('chFill');
+  if (label) label.textContent = total ? `本章 ${done}/${total} 完成` : '本章無可執行範例';
+  if (fill) fill.style.width = total ? `${Math.round((done / total) * 100)}%` : '0';
+}
+
+async function chapterAct(act) {
+  if (!currentBook) return;
+  if (act === 'rerun') {
+    // 只清本頁視覺態（不動後端進度），方便再跑一次
+    for (const k of Object.keys(blockLines)) delete blockLines[k];
+    for (const k of Object.keys(blockStatus)) delete blockStatus[k];
+    bookEl.querySelectorAll('.codeblock').forEach((box) => {
+      const code = box.querySelector('code').textContent;
+      box.querySelector('code').innerHTML = codeHtml(code);
+      box.classList.remove('busy');
+      setProg(box, '尚未執行');
+      const sb = box.querySelector('button[data-act="step"]');
+      if (sb) sb.textContent = '單步 ▶|';
+    });
+  } else if (act === 'reset-ch' || act === 'reset-book') {
+    if (!confirm(act === 'reset-ch' ? '清掉本章的進度紀錄？' : '清掉整本書的進度紀錄？')) return;
+    const q = act === 'reset-ch' && currentCh ? `?chapter=${encodeURIComponent(currentCh)}` : '';
+    await fetch(`/api/progress/${encodeURIComponent(currentBook)}${q}`, { method: 'DELETE' });
+    paintProgress();
+  }
 }
 
 bookSel.onchange = () => bookSel.value && loadBook(bookSel.value);
@@ -247,7 +384,7 @@ function paint(box) {
   const lines = blockLines[id] || box.querySelector('code').textContent.split('\n');
   const st = blockStatus[id] || [];
   box.querySelector('code').innerHTML = lines.map((l, i) =>
-    `<span class="cl${st[i] === undefined ? '' : st[i] === 0 ? ' st-ok' : ' st-fail'}" data-i="${i}">${esc(l) || ' '}</span>`
+    `<span class="cl${/^\s*#/.test(l) ? ' cmt' : ''}${st[i] === undefined ? '' : st[i] === 0 ? ' st-ok' : ' st-fail'}" data-i="${i}">${esc(l) || ' '}</span>`
   ).join('\n');
 }
 
@@ -263,31 +400,55 @@ function needConn() {
   return true;
 }
 
+let lastBlock = null; // 快捷鍵目標：最後點的範例（預設本章第一個）
+
+function runBlock(id, kind) {
+  const box = boxOf(id);
+  if (!box || !needConn() || box.classList.contains('busy')) return;
+  const code = box.querySelector('code').textContent;
+  // v0.5：危險模式二次確認（後端還會再擋一次，這裡是先提醒）
+  const hit = warnList.find((w) => (` ${code.toLowerCase()} `).includes(` ${w.toLowerCase()} `) || code.includes(w));
+  if (hit && !confirm(`⚠️ 範例含有「${hit}」，可能有風險，確定執行？`)) return;
+  lastBlock = id;
+  const extra = currentBook ? { book: currentBook, ch: currentCh } : {};
+  if (kind === 'step') {
+    setBusy(box, true);
+    ws.send(JSON.stringify({ type: 'step', blockId: id, code, ...extra }));
+  } else {
+    setBusy(box, true);
+    setProg(box, '全跑執行中…');
+    ws.send(JSON.stringify({ type: 'run', blockId: id, code, ...extra }));
+  }
+  term.focus();
+}
+
+// v0.6 快捷鍵：焦點在 terminal 時 Cmd/Ctrl+Enter 全跑、Shift+Enter 單步（作用於目前範例）
+try {
+  term.attachCustomKeyEventHandler((e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      if (lastBlock) runBlock(lastBlock, 'run');
+      return false;
+    }
+    if (e.shiftKey && e.key === 'Enter') {
+      if (lastBlock) runBlock(lastBlock, 'step');
+      return false;
+    }
+  });
+} catch { /* 舊版 xterm 沒有此 API 就跳過 */ }
+
 bookEl.addEventListener('click', async (e) => {
+  const bbtn = e.target.closest('button[data-book-act]');
+  if (bbtn) { chapterAct(bbtn.dataset.bookAct); return; }
   const btn = e.target.closest('button[data-act]');
   if (!btn) return;
   const box = e.target.closest('.codeblock');
   const id = box.dataset.blockId;
-  const code = box.querySelector('code').textContent;
   if (btn.dataset.act === 'copy') {
-    try { await navigator.clipboard.writeText(code); btn.textContent = '已複製'; }
+    try { await navigator.clipboard.writeText(box.querySelector('code').textContent); btn.textContent = '已複製'; }
     catch { btn.textContent = '複製失敗'; }
     setTimeout(() => (btn.textContent = '複製'), 1200);
-  } else if (!needConn() || box.classList.contains('busy')) {
-    return;
   } else if (btn.dataset.act === 'step' || btn.dataset.act === 'run') {
-    // v0.5：危險模式二次確認（後端還會再擋一次，這裡是先提醒）
-    const hit = warnList.find((w) => (` ${code.toLowerCase()} `).includes(` ${w.toLowerCase()} `) || code.includes(w));
-    if (hit && !confirm(`⚠️ 範例含有「${hit}」，可能有風險，確定執行？`)) return;
-    if (btn.dataset.act === 'step') {
-      setBusy(box, true);
-      ws.send(JSON.stringify({ type: 'step', blockId: id, code }));
-    } else {
-      setBusy(box, true);
-      setProg(box, '全跑執行中…');
-      ws.send(JSON.stringify({ type: 'run', blockId: id, code }));
-    }
-    term.focus();
+    runBlock(id, btn.dataset.act);
   }
 });
 
@@ -315,6 +476,7 @@ function onRunMsg(msg) {
       if (msg.done) {
         if (stepBtn) stepBtn.textContent = '單步 ▶|';
         setProg(box, msg.error ? `單步：${msg.error}` : `單步完成 ${msg.total}/${msg.total}`, msg.error ? 'fail' : 'ok');
+        paintProgress();
       } else {
         if (stepBtn) stepBtn.textContent = `下一步 (${msg.index + 2}/${msg.total})`;
         setProg(box, `單步 ${msg.index + 1}/${msg.total}（${mark}，${msg.durationMs}ms）`);
@@ -324,11 +486,33 @@ function onRunMsg(msg) {
   } else if (msg.type === 'blocked') {
     setBusy(box, false);
     setProg(box, `⛔ 已阻擋：第 ${msg.index + 1} 行危險（${msg.reason}），整塊未執行`, 'fail');
+    paintProgress();
   } else if (msg.type === 'runDone') {
     setBusy(box, false);
     if (msg.ok) setProg(box, `✓ 全跑完成`, 'ok');
-    else if (msg.error) setProg(box, `全跑：${msg.error}`, 'fail');
-    else setProg(box, `✗ 第 ${msg.failedIndex + 1} 行失敗（exit=${msg.exitCode}），已停止`, 'fail');
+    else if (msg.error === 'blocked') { /* ⛔ 文案已由 blocked 訊息設好，不覆寫 */ }
+    else if (msg.error) {
+      setProg(box, `全跑：${msg.error}`, 'fail');
+    } else {
+      setProg(box, `✗ 第 ${msg.failedIndex + 1} 行失敗（exit=${msg.exitCode}），已停止`, 'fail');
+      const h = hintFor(lastOut); // v0.6：常見錯誤一句話提示
+      if (h) {
+        const d = document.createElement('div');
+        d.className = 'cb-hint';
+        d.textContent = `💡 ${h}`;
+        box.appendChild(d);
+      }
+    }
+    paintProgress(); // 後端進度已記，順手重繪徽章＋章進度
+  } else if (msg.type === 'expect') {
+    // v0.6：expect 關鍵字自動對照
+    const old = box.querySelector('.cb-exp.live');
+    if (old) old.remove();
+    const d = document.createElement('div');
+    d.className = `cb-exp live ${msg.met ? 'ok' : 'fail'}`;
+    d.textContent = msg.met ? `觀察「${msg.keyword}」✓ 出現了` : `觀察「${msg.keyword}」✗ 沒看到`;
+    box.appendChild(d);
+    paintProgress();
   } else if (msg.type === 'stepReset') {
     setBusy(box, false);
   }

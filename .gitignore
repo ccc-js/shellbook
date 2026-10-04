@@ -151,3 +151,5 @@ vite.config.ts.timestamp-*
 # shellbook runtime: session sandboxes (keep the dir placeholder)
 workspace/*
 !workspace/.gitkeep
+progress/
+notes/
