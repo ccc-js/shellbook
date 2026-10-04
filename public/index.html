@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>shellbook v0.2</title>
+<title>shellbook v0.3</title>
 <link rel="stylesheet" href="/vendor/xterm-css/xterm.css" />
 <style>
   html, body { height: 100%; margin: 0; }
@@ -33,12 +33,20 @@
   .cb-bar .spacer { flex: 1; }
   .cb-bar button { font-size: 12px; cursor: pointer; }
   .cb-note { font-size: 12px; color: #666; padding: 2px 8px 6px; background: #f7fafd; }
+  .cb-progress { font-size: 12px; padding: 4px 8px; background: #f7fafd; color: #333; }
+  .cb-progress.ok { background: #e6f4ea; color: #137333; }
+  .cb-progress.fail { background: #fdecea; color: #a00; }
+  .codeblock pre code { display: block; }
+  .codeblock .cl { display: block; padding: 0 4px; border-left: 3px solid transparent; }
+  .codeblock .st-ok { background: #e6f4ea; border-left-color: #34a853; }
+  .codeblock .st-fail { background: #fdecea; border-left-color: #ea4335; }
+  .codeblock.busy button[data-act="step"], .codeblock.busy button[data-act="run"] { opacity: .4; pointer-events: none; }
   #bookErr { color: #a00; }
 </style>
 </head>
 <body>
   <header id="menu">
-    <strong>shellbook</strong><span style="color:#888">v0.2</span>
+    <strong>shellbook</strong><span style="color:#888">v0.3</span>
     <label>書籍 <select id="bookSel"><option value="">載入中…</option></select></label>
     <label>章節 <select id="chSel"><option value="">—</option></select></label>
     <button id="btnReconnect">重連</button>
@@ -85,6 +93,7 @@ function connect() {
   ws.onmessage = (ev) => {
     let msg; try { msg = JSON.parse(ev.data); } catch { return; }
     if (msg.type === 'output') term.write(msg.data);
+    else onRunMsg(msg); // v0.3：單步/全跑進度
   };
 }
 connect();
@@ -139,9 +148,10 @@ function renderChapter(markdown, base) {
         + `<div class="cb-bar"><span class="mode">${mode === 'step' ? '單步' : '整塊'}</span>`
         + `<span>${esc(lang)} · ${code.split('\n').length} 行</span>`
         + `<span class="spacer"></span>`
-        + `<button data-act="insert">插入 ↓</button><button data-act="copy">複製</button></div>`
+        + `<button data-act="step">單步 ▶|</button><button data-act="run">全跑 ▶▶</button><button data-act="copy">複製</button></div>`
         + `<pre><code>${esc(code)}</code></pre>`
-        + (hints ? `<div class="cb-note">${hints}（v0.2：按「插入」送到 shell，自己按 Enter 執行）</div>` : '')
+        + `<div class="cb-progress">尚未執行</div>`
+        + (hints ? `<div class="cb-note">${hints}</div>` : '')
         + `</div>`;
     } else {
       html += `<pre><code>${esc(code)}</code></pre>`;
@@ -183,26 +193,97 @@ async function loadChapter(name, file) {
 bookSel.onchange = () => bookSel.value && loadBook(bookSel.value);
 chSel.onchange = () => bookSel.value && chSel.value && loadChapter(bookSel.value, chSel.value);
 
-// 插入 / 複製（事件委派；v0.2 插入不帶換行，由使用者按 Enter 執行）
+// 單步 / 全跑（v0.3；事件委派＋busy 互斥，避免交錯送指令）
+const blockLines = {}; // blockId -> 後端切好的 steps（runStarted/stepStarted 回來才有）
+const blockStatus = {}; // blockId -> 每行 exit code（null=未跑）
+const boxOf = (id) => bookEl.querySelector(`[data-block-id="${CSS.escape(id)}"]`);
+const setBusy = (box, busy) => box && box.classList.toggle('busy', busy);
+const progOf = (box) => box && box.querySelector('.cb-progress');
+
+function paint(box) {
+  const id = box.dataset.blockId;
+  const lines = blockLines[id] || box.querySelector('code').textContent.split('\n');
+  const st = blockStatus[id] || [];
+  box.querySelector('code').innerHTML = lines.map((l, i) =>
+    `<span class="cl${st[i] === undefined ? '' : st[i] === 0 ? ' st-ok' : ' st-fail'}" data-i="${i}">${esc(l) || ' '}</span>`
+  ).join('\n');
+}
+
+function setProg(box, text, cls) {
+  const p = progOf(box);
+  if (!p) return;
+  p.textContent = text;
+  p.className = 'cb-progress' + (cls ? ` ${cls}` : '');
+}
+
+function needConn() {
+  if (!ws || ws.readyState !== 1) { alert('shell 尚未連線，請先按「重連」'); return false; }
+  return true;
+}
+
 bookEl.addEventListener('click', async (e) => {
   const btn = e.target.closest('button[data-act]');
   if (!btn) return;
   const box = e.target.closest('.codeblock');
+  const id = box.dataset.blockId;
   const code = box.querySelector('code').textContent;
-  if (btn.dataset.act === 'insert') {
-    if (ws && ws.readyState === 1) {
-      ws.send(JSON.stringify({ type: 'input', data: code }));
-      term.focus();
-      term.write('\r\n\x1b[33m[已插入上段範例，按 Enter 執行]\x1b[0m\r\n');
-    } else {
-      alert('shell 尚未連線，請先按「重連」');
-    }
-  } else if (btn.dataset.act === 'copy') {
+  if (btn.dataset.act === 'copy') {
     try { await navigator.clipboard.writeText(code); btn.textContent = '已複製'; }
     catch { btn.textContent = '複製失敗'; }
     setTimeout(() => (btn.textContent = '複製'), 1200);
+  } else if (!needConn() || box.classList.contains('busy')) {
+    return;
+  } else if (btn.dataset.act === 'step') {
+    setBusy(box, true);
+    ws.send(JSON.stringify({ type: 'step', blockId: id, code }));
+    term.focus();
+  } else if (btn.dataset.act === 'run') {
+    setBusy(box, true);
+    setProg(box, '全跑執行中…');
+    ws.send(JSON.stringify({ type: 'run', blockId: id, code }));
+    term.focus();
   }
 });
+
+// 後端 run/step 訊息 → 高亮＋進度
+function onRunMsg(msg) {
+  const box = msg.blockId ? boxOf(msg.blockId) : null;
+  if (!box) return;
+  const id = msg.blockId;
+  if (msg.type === 'runStarted' || msg.type === 'stepStarted') {
+    blockLines[id] = msg.lines;
+    blockStatus[id] = new Array(msg.total).fill(undefined);
+    paint(box);
+    setProg(box, msg.type === 'runStarted' ? `全跑執行中 0/${msg.total}…` : `單步就緒 0/${msg.total}，按「單步」逐行執行`);
+    if (msg.type === 'runStarted') setBusy(box, true);
+  } else if (msg.type === 'result' || msg.type === 'stepResult') {
+    if (!blockLines[id]) { blockLines[id] = [msg.line]; blockStatus[id] = [undefined]; }
+    blockStatus[id][msg.index] = msg.exitCode === null ? -1 : msg.exitCode;
+    paint(box);
+    const mark = msg.timeout ? '超時' : `exit=${msg.exitCode}`;
+    if (msg.type === 'result') {
+      setProg(box, `全跑中 ${msg.index + 1}/${msg.total}（${mark}，${msg.durationMs}ms）`);
+    } else {
+      setBusy(box, false);
+      const stepBtn = box.querySelector('button[data-act="step"]');
+      if (msg.done) {
+        if (stepBtn) stepBtn.textContent = '單步 ▶|';
+        setProg(box, msg.error ? `單步：${msg.error}` : `單步完成 ${msg.total}/${msg.total}`, msg.error ? 'fail' : 'ok');
+      } else {
+        if (stepBtn) stepBtn.textContent = `下一步 (${msg.index + 2}/${msg.total})`;
+        setProg(box, `單步 ${msg.index + 1}/${msg.total}（${mark}，${msg.durationMs}ms）`);
+      }
+      if (msg.error) setProg(box, `單步：${msg.error}`, 'fail');
+    }
+  } else if (msg.type === 'runDone') {
+    setBusy(box, false);
+    if (msg.ok) setProg(box, `✓ 全跑完成`, 'ok');
+    else if (msg.error) setProg(box, `全跑：${msg.error}`, 'fail');
+    else setProg(box, `✗ 第 ${msg.failedIndex + 1} 行失敗（exit=${msg.exitCode}），已停止`, 'fail');
+  } else if (msg.type === 'stepReset') {
+    setBusy(box, false);
+  }
+}
 
 loadBooks().catch((e) => { bookEl.innerHTML = `<p id="bookErr">載入書籍失敗：${e.message}</p>`; });
 
